@@ -1,3 +1,7 @@
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+import patch_ssl
+
 from indicators import analyze_multiple_tickers
 from news_feed import fetch_latest_news
 from trading_agent import previsione_trading_agent

@@ -739,7 +739,15 @@ def log_bot_operation(
                 classification = sentiment_norm.get("classificazione")
                 ts_raw = sentiment_norm.get("timestamp")
                 try:
-                    ts_val = int(ts_raw) if ts_raw is not None else None
+                    ts_int = int(ts_raw) if ts_raw is not None else None
+                    if ts_int is not None:
+                        # Auto-detect ms vs seconds (year 2286 is ~1e10 seconds)
+                        if ts_int > 1e11: 
+                            ts_val = datetime.fromtimestamp(ts_int / 1000, tz=timezone.utc)
+                        else:
+                            ts_val = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+                    else:
+                        ts_val = None
                 except Exception:
                     ts_val = None
 
@@ -769,7 +777,15 @@ def log_bot_operation(
                     change_pct = f.get("Variazione %") or f.get("change_pct")
                     ts_raw = f.get("Timestamp Previsione") or f.get("forecast_timestamp")
                     try:
-                        ts_val = int(ts_raw) if ts_raw is not None else None
+                        ts_int = int(ts_raw) if ts_raw is not None else None
+                        if ts_int is not None:
+                            # Auto-detect ms vs seconds
+                            if ts_int > 1e11:
+                                ts_val = datetime.fromtimestamp(ts_int / 1000, tz=timezone.utc)
+                            else:
+                                ts_val = datetime.fromtimestamp(ts_int, tz=timezone.utc)
+                        else:
+                            ts_val = None
                     except Exception:
                         ts_val = None
 

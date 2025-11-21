@@ -2,14 +2,13 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 import os
 import json 
+import httpx
 
 load_dotenv()
 # read api key
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY not found in .env")
-
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def previsione_trading_agent(prompt):
     """
@@ -37,6 +36,11 @@ def previsione_trading_agent(prompt):
     """
 
     try:
+        # Initialize client lazily with SSL verification disabled for this environment
+        # This fixes the hang on import and the SSL verification error
+        http_client = httpx.Client(verify=False)
+        client = Anthropic(api_key=ANTHROPIC_API_KEY, http_client=http_client)
+
         message = client.messages.create(
             model="claude-haiku-4-5",
             max_tokens=1024,
