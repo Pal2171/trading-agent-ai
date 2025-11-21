@@ -38,6 +38,10 @@ def get_db_config() -> DBConfig:
             "DATABASE_URL non impostata. Imposta la variabile d'ambiente, "
             "ad esempio: postgresql://user:password@localhost:5432/trading_db"
         )
+    # Debug: Stampa il DSN mascherato per capire cosa sta leggendo
+    dsn_masked = dsn.replace(dsn.split(":")[2].split("@")[0], "****") if ":" in dsn and "@" in dsn else "INVALID_DSN_FORMAT"
+    print(f"DEBUG: Tentativo di connessione al DB con: {dsn_masked}")
+    
     return DBConfig(dsn=dsn)
 
 
@@ -49,11 +53,28 @@ def get_connection():
     """
 
     config = get_db_config()
-    conn = psycopg2.connect(config.dsn)
+    
+    # Force sslmode=require for Railway if not present, BUT NOT for localhost
+    dsn = config.dsn
+    if "localhost" not in dsn and "127.0.0.1" not in dsn:
+        if "sslmode" not in dsn:
+            if "?" in dsn:
+                dsn += "&sslmode=require"
+            else:
+                dsn += "?sslmode=require"
+
     try:
-        yield conn
-    finally:
-        conn.close()
+        conn = psycopg2.connect(dsn)
+        try:
+            yield conn
+        finally:
+            conn.close()
+    except psycopg2.OperationalError as e:
+        print(f"DB CONNECTION ERROR: {e}")
+        # Print masked DSN again for clarity
+        masked = dsn.replace(dsn.split(":")[2].split("@")[0], "****") if ":" in dsn and "@" in dsn else "INVALID_DSN"
+        print(f"FAILED DSN: {masked}")
+        raise e
 
 
 # =====================
@@ -756,7 +777,7 @@ def log_bot_operation(
                     INSERT INTO sentiment_contexts (context_id, value, classification, sentiment_timestamp, raw)
                     VALUES (%s, %s, %s, %s, %s);
                     """,
-                    (context_id, value, classification, ts_val, Json(sentiment_norm)),
+                    (context_id, value, classification, int(ts_val.timestamp()) if ts_val is not None else None, Json(sentiment_norm)),
                 )
 
 
@@ -817,7 +838,7 @@ def log_bot_operation(
                             _to_plain_number(lower),
                             _to_plain_number(upper),
                             _to_plain_number(change_pct),
-                            ts_val,
+                            int(ts_val.timestamp()) if ts_val is not None else None,  # Convert to Unix timestamp (bigint)
                             Json(_normalize_for_json(f)),
                         ),
                     )

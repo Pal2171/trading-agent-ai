@@ -1,23 +1,25 @@
+"""
+SSL Patch for HyperLiquid API
+
+This module disables SSL verification to fix connection issues with the HyperLiquid testnet API.
+Import this at the beginning of main.py before any other imports that use HTTP clients.
+"""
 import ssl
-import urllib3
-import requests
-import httpx
+import warnings
 
-# Disable warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Disable SSL warnings
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 
-# Patch requests
-old_request = requests.Session.request
-def new_request(self, method, url, *args, **kwargs):
-    kwargs['verify'] = False
-    return old_request(self, method, url, *args, **kwargs)
-requests.Session.request = new_request
+# Monkey-patch SSL context creation to disable verification
+_original_create_default_context = ssl.create_default_context
 
-# Patch httpx
-old_init = httpx.Client.__init__
-def new_init(self, *args, **kwargs):
-    kwargs['verify'] = False
-    old_init(self, *args, **kwargs)
-httpx.Client.__init__ = new_init
+def _create_unverified_context(*args, **kwargs):
+    context = _original_create_default_context(*args, **kwargs)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
 
-print("SSL Verification disabled globally via patch_ssl.py", flush=True)
+ssl.create_default_context = _create_unverified_context
+ssl._create_default_https_context = _create_unverified_context
+
+print("[SSL Patch] SSL verification disabled for all HTTPS connections")
