@@ -318,6 +318,174 @@ class HyperLiquidTrader:
     # ----------------------------------------------------------------------
     #                           UTILITY DEBUG
     # ----------------------------------------------------------------------
+    def execute_signal(self, order_json: Dict[str, Any]) -> Dict[str, Any]:
+        from decimal import Decimal, ROUND_DOWN
+
+        self._validate_order_input(order_json)
+
+        op = order_json["operation"]
+        symbol = order_json["symbol"]
+        direction = order_json["direction"]
+        portion = Decimal(str(order_json["target_portion_of_balance"]))
+        leverage = int(order_json.get("leverage", 1))
+
+        if op == "hold":
+            print(f"[HyperLiquidTrader] HOLD — nessuna azione per {symbol}.")
+            return {"status": "hold", "message": "No action taken."}
+
+        if op == "close":
+            print(f"[HyperLiquidTrader] Market CLOSE per {symbol}")
+            return self.exchange.market_close(symbol)
+
+        # OPEN --------------------------------------------------------
+        # Prima di aprire la posizione, imposta la leva desiderata
+        leverage_result = self.set_leverage_for_symbol(
+            symbol=symbol,
+            leverage=leverage,
+            is_cross=True  # Puoi cambiare in False per isolated margin
+        )
+        
+        if leverage_result.get('status') != 'ok':
+            print(f"⚠️ Attenzione: impostazione leva potrebbe aver avuto problemi: {leverage_result}")
+        
+        # Piccola pausa per assicurarsi che la leva sia applicata
+        import time
+        time.sleep(0.5)
+        
+        # Verifica la leva attuale dopo l'aggiornamento
+        current_leverage_info = self.get_current_leverage(symbol)
+        print(f"📊 Leva attuale per {symbol}: {current_leverage_info}")
+
+        # Ora procedi con l'apertura della posizione
+        user = self.info.user_state(self.account_address)
+        balance_usd = Decimal(str(user["marginSummary"]["accountValue"]))
+
+        if balance_usd <= 0:
+            raise RuntimeError("Balance account = 0")
+
+        notional = balance_usd * portion * Decimal(str(leverage))
+
+        mids = self.info.all_mids()
+        if symbol not in mids:
+            raise RuntimeError(f"Symbol {symbol} non presente su HL")
+
+        mark_px = Decimal(str(mids[symbol]))
+        raw_size = notional / mark_px
+
+        # Ottieni info sul simbolo dalla meta
+        symbol_info = None
+        for perp in self.meta["universe"]:
+            if perp["name"] == symbol:
+                symbol_info = perp
+                break
+        
+        if not symbol_info:
+            raise RuntimeError(f"Symbol {symbol} non trovato nella meta universe")
+
+        # IMPORTANTE: Ottieni il minimum order size (non szDecimals!)
+        min_size = Decimal(str(symbol_info.get("minSz", "0.001")))
+        sz_decimals = int(symbol_info.get("szDecimals", 8))
+        max_leverage = symbol_info.get("maxLeverage", 100)
+
+        # Verifica che la leva richiesta non superi il massimo
+        if leverage > max_leverage:
+            print(f"⚠️ Leva richiesta ({leverage}) supera il massimo per {symbol} ({max_leverage})")
+
+        # Arrotonda secondo i decimali permessi
+        quantizer = Decimal(10) ** -sz_decimals
+        size_decimal = raw_size.quantize(quantizer, rounding=ROUND_DOWN)
+
+        # Verifica che sia sopra il minimo
+        if size_decimal < min_size:
+            print(f"⚠️ Size calcolata ({size_decimal}) < minima richiesta ({min_size})")
+            print(f"   Raw size: {raw_size}, Balance: {balance_usd}, Portion: {portion}, Leverage: {leverage}")
+            print(f"   Notional: {notional}, Mark price: {mark_px}")
+            
+            # Usa direttamente il minimum size
+            size_decimal = min_size
+
+        # Converti a float per l'API
+        size_float = float(size_decimal)
+
+        is_buy = (direction == "long")
+
+        print(
+            f"\n[HyperLiquidTrader] Market {'BUY' if is_buy else 'SELL'} "
+            f"{size_float} {symbol}\n"
+            f"  💰 Prezzo: ${mark_px}\n"
+            f"  📊 Notional: ${notional:.2f}\n"
+            f"  🎯 Leva target: {leverage}x\n"
+        )
+
+        res = self.exchange.market_open(
+            symbol,
+            is_buy,
+            size_float,
+            None,
+            0.01
+        )
+
+        return res
+
+    # ----------------------------------------------------------------------
+    #                           STATO ACCOUNT
+    # ----------------------------------------------------------------------
+    def get_account_status(self) -> Dict[str, Any]:
+        data = self.info.user_state(self.account_address)
+        balance = float(data["marginSummary"]["accountValue"])
+
+        mids = self.info.all_mids()
+        positions = []
+
+        # Gestisci il formato corretto dei dati
+        asset_positions = data.get("assetPositions", [])
+        
+        for p in asset_positions:
+            # Estrai la posizione dal formato corretto
+            if isinstance(p, dict) and "position" in p:
+                pos = p["position"]
+                coin = pos.get("coin", "")
+            else:
+                # Se il formato è diverso, prova ad adattarti
+                pos = p
+                coin = p.get("coin", p.get("symbol", ""))
+                
+            if not pos or not coin:
+                continue
+                
+            size = float(pos.get("szi", 0))
+            if size == 0:
+                continue
+
+            entry = float(pos.get("entryPx", 0))
+            mark = float(mids.get(coin, entry))
+
+            # Calcola P&L
+            pnl = (mark - entry) * size
+            
+            # Estrai info sulla leva
+            leverage_info = pos.get("leverage", {})
+            leverage_value = leverage_info.get("value", "N/A")
+            leverage_type = leverage_info.get("type", "unknown")
+
+            positions.append({
+                "symbol": coin,
+                "side": "long" if size > 0 else "short",
+                "size": abs(size),
+                "entry_price": entry,
+                "mark_price": mark,
+                "pnl_usd": round(pnl, 4),
+                "leverage": f"{leverage_value}x ({leverage_type})"
+            })
+
+        return {
+            "balance_usd": balance,
+            "open_positions": positions,
+        }
+    
+    # ----------------------------------------------------------------------
+    #                           UTILITY DEBUG
+    # ----------------------------------------------------------------------
     def debug_symbol_limits(self, symbol: str = None):
         """Mostra i limiti di trading per un simbolo o tutti"""
         print("\n📊 LIMITI TRADING HYPERLIQUID")
@@ -333,3 +501,82 @@ class HyperLiquidTrader:
             print(f"  Price Decimals: {perp.get('pxDecimals', 'N/A')}")
             print(f"  Max Leverage: {perp.get('maxLeverage', 'N/A')}")
             print(f"  Only Isolated: {perp.get('onlyIsolated', False)}")
+
+    # ----------------------------------------------------------------------
+    #                       GESTIONE ORDINI (STOP LOSS)
+    # ----------------------------------------------------------------------
+    def cancel_all_orders(self, symbol: str):
+        """Cancella tutti gli ordini aperti per un simbolo"""
+        try:
+            print(f"🗑️ Cancellazione ordini aperti per {symbol}...")
+            open_orders = self.info.open_orders(self.account_address)
+            
+            orders_to_cancel = []
+            for order in open_orders:
+                if order['coin'] == symbol:
+                    orders_to_cancel.append(order)
+            
+            if not orders_to_cancel:
+                print(f"✅ Nessun ordine aperto da cancellare per {symbol}")
+                return
+                
+            results = []
+            for order in orders_to_cancel:
+                res = self.exchange.cancel(symbol, order['oid'])
+                results.append(res)
+                
+            print(f"✅ Cancellati {len(results)} ordini per {symbol}")
+            return results
+            
+        except Exception as e:
+            print(f"❌ Errore cancellazione ordini: {e}")
+            return []
+
+    def place_stop_loss(self, symbol: str, is_buy: bool, price: float, size: float):
+        """
+        Piazza un ordine Stop Loss (Trigger Order).
+        is_buy: True se stiamo chiudendo uno Short (quindi compriamo), False se chiudiamo un Long (vendiamo).
+        """
+        try:
+            # Arrotonda il prezzo ai decimali corretti
+            # (Per semplicità usiamo 1 decimale per crypto grandi, ma andrebbe letto da meta)
+            price = round(price, 1) 
+            
+            print(f"🛡️ Impostazione STOP LOSS per {symbol} a ${price} (Size: {size})")
+            
+            # Costruzione ordine Trigger (Stop Market)
+            # Hyperliquid SDK 'order' method signature:
+            # order(name, is_buy, sz, limit_px, order_type, reduce_only=False)
+            
+            # Per Stop Loss Market:
+            # triggerPx = prezzo di attivazione
+            # isMarket = True (esegue a mercato quando tocca)
+            # tpsl = 'sl' (indica che è uno stop loss)
+            
+            order_type = {
+                "trigger": {
+                    "triggerPx": price,
+                    "isMarket": True, 
+                    "tpsl": "sl"
+                }
+            }
+            
+            res = self.exchange.order(
+                name=symbol,
+                is_buy=is_buy,
+                sz=size,
+                limit_px=price, # Per i trigger order market, questo campo a volte è ignorato o usato come trigger, ma order_type comanda
+                order_type=order_type,
+                reduce_only=True # Importante: chiude solo la posizione, non ne apre una opposta
+            )
+            
+            if res['status'] == 'ok':
+                print(f"✅ Stop Loss piazzato con successo: {res}")
+            else:
+                print(f"⚠️ Errore piazzamento Stop Loss: {res}")
+                
+            return res
+            
+        except Exception as e:
+            print(f"❌ Errore critico piazzamento Stop Loss: {e}")
+            return {"status": "error", "error": str(e)}

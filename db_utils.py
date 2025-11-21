@@ -98,16 +98,16 @@ CREATE TABLE IF NOT EXISTS indicators_contexts (
     ticker                  TEXT NOT NULL,
     ts                      TIMESTAMPTZ,
     price                   NUMERIC(20, 8),
+    ema9                    NUMERIC(20, 8),
     ema20                   NUMERIC(20, 8),
+    ema21                   NUMERIC(20, 8),
+    supertrend              TEXT,
+    adx                     NUMERIC(20, 8),
     macd                    NUMERIC(20, 8),
     rsi_7                   NUMERIC(20, 8),
+    rsi_14                  NUMERIC(20, 8),
     volume_bid              NUMERIC(20, 8),
     volume_ask              NUMERIC(20, 8),
-    pp                      NUMERIC(20, 8),
-    s1                      NUMERIC(20, 8),
-    s2                      NUMERIC(20, 8),
-    r1                      NUMERIC(20, 8),
-    r2                      NUMERIC(20, 8),
     open_interest_latest    NUMERIC(30, 10),
     open_interest_average   NUMERIC(30, 10),
     funding_rate            NUMERIC(20, 8),
@@ -117,13 +117,20 @@ CREATE TABLE IF NOT EXISTS indicators_contexts (
     atr14_15m               NUMERIC(20, 8),
     volume_15m_current      NUMERIC(30, 10),
     volume_15m_average      NUMERIC(30, 10),
+    candlestick_patterns    JSONB,
     intraday_mid_prices     JSONB,
     intraday_ema20_series   JSONB,
     intraday_macd_series    JSONB,
     intraday_rsi7_series    JSONB,
     intraday_rsi14_series   JSONB,
     lt15m_macd_series       JSONB,
-    lt15m_rsi14_series      JSONB
+    lt15m_rsi14_series      JSONB,
+    -- Legacy pivot points fields (deprecated but kept for compatibility)
+    pp                      NUMERIC(20, 8),
+    s1                      NUMERIC(20, 8),
+    s2                      NUMERIC(20, 8),
+    r1                      NUMERIC(20, 8),
+    r2                      NUMERIC(20, 8)
 );
 
 CREATE TABLE IF NOT EXISTS news_contexts (
@@ -189,20 +196,21 @@ MIGRATION_SQL = """
 ALTER TABLE bot_operations
     ADD COLUMN IF NOT EXISTS context_id BIGINT;
 
+-- Nuova migrazione: aggiungere campi per nuovi indicatori
 ALTER TABLE indicators_contexts
     ADD COLUMN IF NOT EXISTS ticker TEXT,
     ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS price NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS ema20 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS ema9 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS ema21 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS supertrend TEXT,
+    ADD COLUMN IF NOT EXISTS adx NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS macd NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS rsi_7 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS volume_bid NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS volume_ask NUMERIC(20, 8),
-    ADD COLUMN IF NOT EXISTS pp NUMERIC(20, 8),
-    ADD COLUMN IF NOT EXISTS s1 NUMERIC(20, 8),
-    ADD COLUMN IF NOT EXISTS s2 NUMERIC(20, 8),
-    ADD COLUMN IF NOT EXISTS r1 NUMERIC(20, 8),
-    ADD COLUMN IF NOT EXISTS r2 NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS open_interest_latest NUMERIC(30, 10),
     ADD COLUMN IF NOT EXISTS open_interest_average NUMERIC(30, 10),
     ADD COLUMN IF NOT EXISTS funding_rate NUMERIC(20, 8),
@@ -212,6 +220,7 @@ ALTER TABLE indicators_contexts
     ADD COLUMN IF NOT EXISTS atr14_15m NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS volume_15m_current NUMERIC(30, 10),
     ADD COLUMN IF NOT EXISTS volume_15m_average NUMERIC(30, 10),
+    ADD COLUMN IF NOT EXISTS candlestick_patterns JSONB,
     ADD COLUMN IF NOT EXISTS intraday_mid_prices JSONB,
     ADD COLUMN IF NOT EXISTS intraday_ema20_series JSONB,
     ADD COLUMN IF NOT EXISTS intraday_macd_series JSONB,
@@ -219,6 +228,14 @@ ALTER TABLE indicators_contexts
     ADD COLUMN IF NOT EXISTS intraday_rsi14_series JSONB,
     ADD COLUMN IF NOT EXISTS lt15m_macd_series JSONB,
     ADD COLUMN IF NOT EXISTS lt15m_rsi14_series JSONB;
+
+-- Rimuovere vecchi campi pivot points (opzionale - li lasciamo per compatibilità)
+-- Se vuoi rimuoverli definitivamente, decommenta queste righe:
+-- ALTER TABLE indicators_contexts DROP COLUMN IF EXISTS pp;
+-- ALTER TABLE indicators_contexts DROP COLUMN IF EXISTS s1;
+-- ALTER TABLE indicators_contexts DROP COLUMN IF EXISTS s2;
+-- ALTER TABLE indicators_contexts DROP COLUMN IF EXISTS r1;
+-- ALTER TABLE indicators_contexts DROP COLUMN IF EXISTS r2;
 
 ALTER TABLE sentiment_contexts
     ADD COLUMN IF NOT EXISTS value INTEGER,
@@ -621,7 +638,9 @@ def log_bot_operation(
                                     volume_bid = None
                                     volume_ask = None
 
-                            # CORREZIONE: Query con 30 placeholder correttamente formattati
+                            # Query aggiornata con nuovi campi (Supertrend, ADX, EMA 9/21, Candlestick)
+                            candlestick_data = item.get("candlestick_patterns", {})
+                            
                             cur.execute(
                                 """
                                 INSERT INTO indicators_contexts (
@@ -629,16 +648,16 @@ def log_bot_operation(
                                     ticker,
                                     ts,
                                     price,
+                                    ema9,
                                     ema20,
+                                    ema21,
+                                    supertrend,
+                                    adx,
                                     macd,
                                     rsi_7,
+                                    rsi_14,
                                     volume_bid,
                                     volume_ask,
-                                    pp,
-                                    s1,
-                                    s2,
-                                    r1,
-                                    r2,
                                     open_interest_latest,
                                     open_interest_average,
                                     funding_rate,
@@ -648,6 +667,7 @@ def log_bot_operation(
                                     atr14_15m,
                                     volume_15m_current,
                                     volume_15m_average,
+                                    candlestick_patterns,
                                     intraday_mid_prices,
                                     intraday_ema20_series,
                                     intraday_macd_series,
@@ -659,11 +679,12 @@ def log_bot_operation(
                                 VALUES (
                                     %s, %s, %s,
                                     %s, %s, %s, %s,
-                                    %s, %s,
                                     %s, %s, %s, %s, %s,
+                                    %s, %s,
                                     %s, %s, %s,
                                     %s, %s, %s, %s,
                                     %s, %s,
+                                    %s,
                                     %s, %s, %s, %s, %s, %s, %s
                                 );
                                 """,
@@ -672,16 +693,16 @@ def log_bot_operation(
                                     ticker,
                                     ts,
                                     _to_plain_number(current.get("price")),
+                                    _to_plain_number(current.get("ema_9")),
                                     _to_plain_number(current.get("ema20")),
+                                    _to_plain_number(current.get("ema_21")),
+                                    current.get("supertrend"),  # TEXT field
+                                    _to_plain_number(current.get("adx")),
                                     _to_plain_number(current.get("macd")),
                                     _to_plain_number(current.get("rsi_7")),
+                                    _to_plain_number(current.get("rsi_14")),
                                     _to_plain_number(volume_bid),
                                     _to_plain_number(volume_ask),
-                                    _to_plain_number(pivot.get("pp")),
-                                    _to_plain_number(pivot.get("s1")),
-                                    _to_plain_number(pivot.get("s2")),
-                                    _to_plain_number(pivot.get("r1")),
-                                    _to_plain_number(pivot.get("r2")),
                                     _to_plain_number(derivatives.get("open_interest_latest")),
                                     _to_plain_number(derivatives.get("open_interest_average")),
                                     _to_plain_number(derivatives.get("funding_rate")),
@@ -691,6 +712,7 @@ def log_bot_operation(
                                     _to_plain_number(lt15.get("atr_14_current")),
                                     _to_plain_number(lt15.get("volume_current")),
                                     _to_plain_number(lt15.get("volume_average")),
+                                    Json(_normalize_for_json(candlestick_data)) if candlestick_data else None,
                                     Json(_normalize_for_json(intraday.get("mid_prices"))) if intraday.get("mid_prices") is not None else None,
                                     Json(_normalize_for_json(intraday.get("ema_20"))) if intraday.get("ema_20") is not None else None,
                                     Json(_normalize_for_json(intraday.get("macd"))) if intraday.get("macd") is not None else None,
