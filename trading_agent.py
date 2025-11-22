@@ -18,18 +18,21 @@ def previsione_trading_agent(prompt):
     
     # Definizione dello schema JSON atteso (per il system prompt)
     json_schema = """
-    {
-        "operation": "open" | "close" | "hold",
-        "symbol": "BTC" | "ETH" | "SOL",
-        "direction": "long" | "short",
-        "target_portion_of_balance": float (0.0 - 1.0),
-        "leverage": int (1 - 5),
-        "reason": "string (max 300 chars)"
-    }
+    [
+        {
+            "operation": "open" | "close" | "hold",
+            "symbol": "BTC" | "SOL",
+            "direction": "long" | "short",
+            "target_portion_of_balance": float (0.0 - 1.0),
+            "leverage": int (1 - 5),
+            "reason": "string (max 300 chars)"
+        },
+        ...
+    ]
     """
 
-    system_message = f"""Sei un esperto trader AI. Analizza i dati forniti e prendi una decisione di trading.
-    DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido che rispetta questo schema:
+    system_message = f"""Sei un esperto trader AI. Analizza i dati forniti e prendi una decisione di trading PER OGNI SIMBOLO RICHIESTO (BTC, SOL).
+    DEVI rispondere ESCLUSIVAMENTE con una LISTA JSON di oggetti che rispetta questo schema:
     {json_schema}
     
     Non aggiungere altro testo prima o dopo il JSON.
@@ -67,12 +70,22 @@ def previsione_trading_agent(prompt):
 
     except Exception as e:
         print(f"Errore durante la chiamata ad Anthropic: {e}")
-        # Ritorna un'azione di default sicura (HOLD)
-        return {
-            "operation": "hold",
-            "symbol": "BTC",
-            "direction": "long",
-            "target_portion_of_balance": 0,
-            "leverage": 1,
-            "reason": f"Error calling AI: {str(e)}"
-        }
+        # Ritorna azioni di default sicure (HOLD) per entrambi
+        return [
+            {
+                "operation": "hold",
+                "symbol": "BTC",
+                "direction": "long",
+                "target_portion_of_balance": 0,
+                "leverage": 1,
+                "reason": f"Error calling AI: {str(e)}"
+            },
+            {
+                "operation": "hold",
+                "symbol": "SOL",
+                "direction": "long",
+                "target_portion_of_balance": 0,
+                "leverage": 1,
+                "reason": f"Error calling AI: {str(e)}"
+            }
+        ]

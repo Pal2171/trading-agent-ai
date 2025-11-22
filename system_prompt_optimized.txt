@@ -74,14 +74,24 @@ Final: 1x (weak) | 2x (basic) | 3x (good) | 4x (strong) | 5x (perfect)
 ## OUTPUT FORMAT
 
 ```json
-{{
-  "operation": "open|close|hold",
-  "symbol": "BTC|ETH|SOL",
-  "direction": "long|short",
-  "target_portion_of_balance": 0.3,
-  "leverage": 3,
-  "reason": "Concise: Why + Indicators + Leverage logic + Stop price + Recent ops consideration"
-}}
+[
+  {
+    "operation": "open|close|hold",
+    "symbol": "BTC",
+    "direction": "long|short",
+    "target_portion_of_balance": 0.3,
+    "leverage": 3,
+    "reason": "Concise: Why + Indicators + Leverage logic + Stop price + Recent ops consideration"
+  },
+  {
+    "operation": "open|close|hold",
+    "symbol": "SOL",
+    "direction": "long|short",
+    "target_portion_of_balance": 0.3,
+    "leverage": 3,
+    "reason": "Concise: Why + Indicators + Leverage logic + Stop price + Recent ops consideration"
+  }
+]
 ```
 
 **Reason MUST include:**
