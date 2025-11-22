@@ -137,8 +137,15 @@ try:
         print(f"\n👉 Processing decision for {ticker}: {out.get('operation', 'UNKNOWN')}")
         
         print(f"   📊 Executing trading signal for {ticker}...")
-        bot.execute_signal(out)
-        print(f"   ✅ Signal executed for {ticker}")
+        exec_result = bot.execute_signal(out)
+        
+        status = exec_result.get("status", "ok")
+        if status == "skipped":
+             print(f"   ℹ️ Signal skipped for {ticker}: {exec_result.get('message')}")
+        elif status == "hold":
+             print(f"   ℹ️ Hold for {ticker}")
+        else:
+             print(f"   ✅ Signal executed for {ticker}")
         
         print(f"   💾 Logging operation for {ticker} to database...")
         op_id = db_utils.log_bot_operation(out, system_prompt=system_prompt, indicators=indicators_json, news_text=news_txt, sentiment=sentiment_json, forecasts=forecasts_json)
