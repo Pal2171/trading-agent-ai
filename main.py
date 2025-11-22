@@ -96,14 +96,17 @@ try:
                 reason_short = reason_short[:77] + '...'
             ops_context += f"{i}. {created_at} | {operation.upper()} {symbol} {direction.upper()} - {reason_short}\n"
         
+        # Filter out HOLDs for the count
+        active_ops = [op for op in recent_ops if op.get('operation', '').lower() != 'hold']
+
         ops_context += "\n**ANTI-OVERTRADING CHECK:**\n"
-        ops_context += f"- Total recent ops: {len(recent_ops)}\n"
-        recent_closes = [op for op in recent_ops if op.get('operation', '').lower() == 'close']
+        ops_context += f"- Total recent active ops: {len(active_ops)}\n"
+        recent_closes = [op for op in active_ops if op.get('operation', '').lower() == 'close']
         if recent_closes:
             ops_context += f"- Recent CLOSE operations: {len(recent_closes)}\n"
             ops_context += "- ⚠️ Be CONSERVATIVE if re-entering same coin\n"
         symbols_count = {}
-        for op in recent_ops[:3]:
+        for op in active_ops[:3]:
             sym = op.get('symbol', '')
             if sym:
                 symbols_count[sym] = symbols_count.get(sym, 0) + 1
