@@ -183,6 +183,48 @@ CREATE TABLE IF NOT EXISTS errors (
 
 CREATE INDEX IF NOT EXISTS idx_errors_created_at
     ON errors(created_at);
+
+-- Tabelle per la Dashboard (posizioni reali e storico trade)
+CREATE TABLE IF NOT EXISTS real_positions (
+    id              BIGSERIAL PRIMARY KEY,
+    deal_id         TEXT UNIQUE NOT NULL,
+    symbol          TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    size            NUMERIC(30, 10) NOT NULL,
+    entry_price     NUMERIC(30, 10),
+    mark_price      NUMERIC(30, 10),
+    pnl_usd         NUMERIC(30, 10),
+    pnl_pct         NUMERIC(10, 4),
+    stop_level      NUMERIC(30, 10),
+    limit_level     NUMERIC(30, 10),
+    leverage        INTEGER,
+    opened_at       TIMESTAMPTZ,
+    last_update     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_real_positions_symbol
+    ON real_positions(symbol);
+
+CREATE TABLE IF NOT EXISTS trades_history (
+    id              BIGSERIAL PRIMARY KEY,
+    deal_id         TEXT UNIQUE NOT NULL,
+    symbol          TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    size            NUMERIC(30, 10) NOT NULL,
+    entry_price     NUMERIC(30, 10),
+    close_price     NUMERIC(30, 10),
+    pnl_usd         NUMERIC(30, 10),
+    pnl_pct         NUMERIC(10, 4),
+    opened_at       TIMESTAMPTZ,
+    closed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    close_reason    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_history_closed_at
+    ON trades_history(closed_at);
+
+CREATE INDEX IF NOT EXISTS idx_trades_history_symbol
+    ON trades_history(symbol);
 """
 
 
@@ -194,9 +236,13 @@ ALTER TABLE indicators_contexts
     ADD COLUMN IF NOT EXISTS ticker TEXT,
     ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS price NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS ema9 NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS ema20 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS supertrend_1h TEXT,
+    ADD COLUMN IF NOT EXISTS adx NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS macd NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS rsi_7 NUMERIC(20, 8),
+    ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS volume_bid NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS volume_ask NUMERIC(20, 8),
     ADD COLUMN IF NOT EXISTS pp NUMERIC(20, 8),
@@ -867,6 +913,202 @@ def get_recent_bot_operations(limit: int = 50) -> List[Dict[str, Any]]:
             )
             rows = cur.fetchall()
             return [r[0] for r in rows]
+
+
+def sync_real_positions(positions: List[Dict[str, Any]]) -> int:
+    """
+    Sincronizza le posizioni reali da Capital.com nella tabella real_positions.
+    
+    Usa UPSERT per evitare duplicati - aggiorna se esiste, inserisce se nuova.
+    Elimina posizioni che non esistono più (chiuse).
+    
+    Args:
+        positions: Lista di posizioni dal bot.get_open_positions()
+        
+    Returns:
+        Numero di posizioni sincronizzate
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Ottieni i deal_id attualmente in tabella
+            cur.execute("SELECT deal_id FROM real_positions")
+            existing_ids = {row[0] for row in cur.fetchall()}
+            
+            # Posizioni attive da Capital.com
+            active_ids = set()
+            
+            for pos in positions:
+                # Capital.com fornisce già un dealId univoco
+                deal_id = pos.get('deal_id') or pos.get('dealId') or f"{pos.get('epic', 'UNK')}_{pos.get('direction', 'UNK')}"
+                active_ids.add(deal_id)
+                
+                # Estrai i dati (formato Capital.com)
+                symbol = pos.get('epic') or pos.get('symbol', 'UNKNOWN')
+                side = pos.get('direction', 'BUY')
+                size = float(pos.get('size', 0))
+                entry_price = float(pos.get('openLevel') or pos.get('entry_price', 0)) if pos.get('openLevel') or pos.get('entry_price') else None
+                mark_price = float(pos.get('currentLevel') or pos.get('mark_price', 0)) if pos.get('currentLevel') or pos.get('mark_price') else None
+                pnl_usd = float(pos.get('profit') or pos.get('pnl_usd', 0)) if pos.get('profit') or pos.get('pnl_usd') else None
+                
+                # Calcola pnl_pct se abbiamo i dati necessari
+                pnl_pct = None
+                if entry_price and mark_price and entry_price != 0:
+                    price_diff = mark_price - entry_price
+                    if side.upper() in ('SELL', 'SHORT'):
+                        price_diff = -price_diff
+                    pnl_pct = (price_diff / entry_price) * 100
+                
+                # Capital.com usa leverage=None per CFD (leva implicita)
+                leverage = pos.get('leverage')
+                if leverage and isinstance(leverage, str):
+                    try:
+                        leverage = int(leverage.replace('x', ''))
+                    except:
+                        leverage = None
+                
+                # Stop/Limit levels
+                stop_level = float(pos.get('stopLevel', 0)) if pos.get('stopLevel') else None
+                limit_level = float(pos.get('limitLevel', 0)) if pos.get('limitLevel') else None
+                
+                # UPSERT
+                cur.execute(
+                    """
+                    INSERT INTO real_positions 
+                        (deal_id, symbol, direction, size, entry_price, mark_price, 
+                         pnl_usd, pnl_pct, stop_level, limit_level, leverage, last_update)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (deal_id) DO UPDATE SET
+                        mark_price = EXCLUDED.mark_price,
+                        pnl_usd = EXCLUDED.pnl_usd,
+                        pnl_pct = EXCLUDED.pnl_pct,
+                        stop_level = EXCLUDED.stop_level,
+                        limit_level = EXCLUDED.limit_level,
+                        last_update = NOW()
+                    """,
+                    (deal_id, symbol, side, size, entry_price, mark_price, 
+                     pnl_usd, pnl_pct, stop_level, limit_level, leverage)
+                )
+            
+            # Rimuovi posizioni che non esistono più (sono state chiuse)
+            closed_ids = existing_ids - active_ids
+            for closed_id in closed_ids:
+                # Prima logga la chiusura in trades_history
+                cur.execute(
+                    """
+                    INSERT INTO trades_history 
+                        (deal_id, symbol, direction, size, entry_price, close_price, 
+                         pnl_usd, pnl_pct, opened_at, closed_at, close_reason)
+                    SELECT 
+                        deal_id, symbol, direction, size, entry_price, mark_price,
+                        pnl_usd, pnl_pct, opened_at, NOW(), 'Position closed'
+                    FROM real_positions
+                    WHERE deal_id = %s
+                    """,
+                    (closed_id,)
+                )
+                
+                # Poi elimina dalla tabella posizioni
+                cur.execute("DELETE FROM real_positions WHERE deal_id = %s", (closed_id,))
+            
+            conn.commit()
+            
+            return len(active_ids)
+
+
+def log_trade_close(deal_id: str, close_reason: str = None) -> Optional[int]:
+    """
+    Registra manualmente la chiusura di un trade in trades_history.
+    
+    Args:
+        deal_id: ID della posizione da chiudere
+        close_reason: Motivo della chiusura (es. "AI decision", "Stop loss")
+        
+    Returns:
+        ID del record creato in trades_history, o None se non trovato
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO trades_history 
+                    (deal_id, symbol, direction, size, entry_price, close_price, 
+                     pnl_usd, pnl_pct, opened_at, closed_at, close_reason)
+                SELECT 
+                    deal_id, symbol, direction, size, entry_price, mark_price,
+                    pnl_usd, pnl_pct, opened_at, NOW(), %s
+                FROM real_positions
+                WHERE deal_id = %s
+                RETURNING id
+                """,
+                (close_reason or 'Manual close', deal_id)
+            )
+            row = cur.fetchone()
+            
+            if row:
+                # Elimina dalla tabella posizioni attive
+                cur.execute("DELETE FROM real_positions WHERE deal_id = %s", (deal_id,))
+                conn.commit()
+                return row[0]
+            
+            return None
+
+
+def log_trade_close_from_position(position: Dict[str, Any], close_reason: str = None) -> Optional[int]:
+    """
+    Registra la chiusura di un trade direttamente dai dati della posizione.
+    Usato quando si chiude una posizione e si vogliono salvare i dati immediatamente.
+    
+    Args:
+        position: Dict con i dati della posizione (da Capital.com get_open_positions)
+        close_reason: Motivo della chiusura
+        
+    Returns:
+        ID del record creato in trades_history
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Estrai i dati dalla posizione
+            deal_id = position.get('dealId') or position.get('deal_id')
+            symbol = position.get('symbol') or position.get('epic', 'UNKNOWN')
+            direction = position.get('direction', 'BUY')
+            size = float(position.get('size', 0))
+            entry_price = float(position.get('entry_price') or position.get('openLevel', 0))
+            close_price = float(position.get('mark_price') or position.get('currentLevel', 0))
+            pnl_usd = float(position.get('pnl') or position.get('profit', 0))
+            
+            # Calcola pnl_pct
+            pnl_pct = None
+            if entry_price and close_price and entry_price != 0:
+                price_diff = close_price - entry_price
+                if direction.upper() in ('SELL', 'SHORT'):
+                    price_diff = -price_diff
+                pnl_pct = (price_diff / entry_price) * 100
+            
+            # Inserisci in trades_history
+            cur.execute(
+                """
+                INSERT INTO trades_history 
+                    (deal_id, symbol, direction, size, entry_price, close_price, 
+                     pnl_usd, pnl_pct, closed_at, close_reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                RETURNING id
+                """,
+                (deal_id, symbol, direction, size, entry_price, close_price,
+                 pnl_usd, pnl_pct, close_reason or 'AI decision')
+            )
+            row = cur.fetchone()
+            
+            # Elimina dalla tabella posizioni attive (se esiste)
+            if deal_id:
+                cur.execute("DELETE FROM real_positions WHERE deal_id = %s", (deal_id,))
+            
+            conn.commit()
+            
+            if row:
+                print(f"[db_utils] Trade chiuso registrato con id={row[0]}")
+                return row[0]
+            
+            return None
 
 
 if __name__ == "__main__":

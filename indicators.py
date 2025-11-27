@@ -1,110 +1,65 @@
 import pandas as pd
 import ta
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Tuple
-
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
+from typing import Dict, List, Tuple, Optional, Any
 
 
-INTERVAL_TO_MS = {
-    "1m": 60_000,
-    "5m": 5 * 60_000,
-    "15m": 15 * 60_000,
-    "1h": 60 * 60_000,
-    "4h": 4 * 60 * 60_000,
-    "1d": 24 * 60 * 60_000,
+# Mapping for Capital.com intervals
+CAPITAL_INTERVAL_MAP = {
+    "1m": "MINUTE",
+    "5m": "MINUTE_5",
+    "15m": "MINUTE_15",
+    "1h": "HOUR",
+    "4h": "HOUR_4",
+    "1d": "DAY",
+}
+
+# Mapping ticker to Capital.com EPIC
+TICKER_TO_EPIC = {
+    "BTC": "BTCUSD",
+    "ETH": "ETHUSD", 
+    "SOL": "SOLUSD",
 }
 
 
-class CryptoTechnicalAnalysisHL:
+class CryptoTechnicalAnalysis:
     """
-    Analisi tecnica usando l'API Info di Hyperliquid.
+    Analisi tecnica usando Capital.com API.
     Tutti gli indicatori principali sono centrati sul timeframe 15 minuti.
     """
 
-    def __init__(self, testnet: bool = True):
-        base_url = constants.TESTNET_API_URL if testnet else constants.MAINNET_API_URL
-        self.info = Info(base_url, skip_ws=True)
+    def __init__(self, capital_client: Any):
+        if capital_client is None:
+            raise ValueError("capital_client è obbligatorio")
+        self.capital_client = capital_client
 
     # ==============================
-    #       FETCH OHLCV (HL)
+    #       FETCH OHLCV
     # ==============================
 
     def get_orderbook_volume(self, ticker: str) -> str:
-        """
-        Restituisce una stringa con i volumi totali di bid e ask per un ticker (es. 'btc-usd').
-        Usa Info.l2_snapshot() dal wrapper ufficiale Hyperliquid.
-        """
-        coin = ticker.split('-')[0].upper()  # es. "BTC" da "btc-usd"
-
-        try:
-            orderbook = self.info.l2_snapshot(coin)
-        except Exception as e:
-            return f"Errore recuperando orderbook: {e}"
-
-        if not orderbook or "levels" not in orderbook:
-            return f"Nessun dato disponibile per {coin}"
-
-        bids = orderbook["levels"][0]
-        asks = orderbook["levels"][1]
-
-        bid_volume = sum(float(level["sz"]) for level in bids)
-        ask_volume = sum(float(level["sz"]) for level in asks)
-
-        return f"Bid Vol: {bid_volume}, Ask Vol: {ask_volume}"
+        """Capital.com non fornisce orderbook, restituiamo N/A"""
+        return "N/A (Capital.com)"
 
     def fetch_ohlcv(self, coin: str, interval: str, limit: int = 500) -> pd.DataFrame:
-        """
-        Recupera i dati OHLCV da Hyperliquid tramite Info.candles_snapshot.
-
-        Args:
-            coin: asset Hyperliquid (es. 'BTC', 'ETH')
-            interval: es. '15m', '1d'
-            limit: numero massimo di candele circa (usato per la finestra temporale)
-
-        Returns:
-            DataFrame con colonne: timestamp, open, high, low, close, volume
-        """
-        if interval not in INTERVAL_TO_MS:
-            raise ValueError(f"Interval '{interval}' non supportato in INTERVAL_TO_MS")
-
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        step_ms = INTERVAL_TO_MS[interval]
-        start_ms = now_ms - limit * step_ms
-
-        # ⚠️ Metodo corretto: candles_snapshot (non candle_snapshot)
-        ohlcv_data = self.info.candles_snapshot(
-            name=coin,
-            interval=interval,
-            startTime=start_ms,
-            endTime=now_ms,
-        )
-
-        if not ohlcv_data:
-            raise RuntimeError(f"Nessuna candela ricevuta per {coin} ({interval})")
-
-        df = pd.DataFrame(ohlcv_data)
-
-        # df ha colonne tipo: t, T, o, h, l, c, v, n, s, i
-        df["timestamp"] = pd.to_datetime(df["t"], unit="ms", utc=True)
-
-        # tieni solo quello che ci serve
-        df = df[["timestamp", "o", "h", "l", "c", "v"]].copy()
-        df.rename(
-            columns={
-                "o": "open",
-                "h": "high",
-                "l": "low",
-                "c": "close",
-                "v": "volume",
-            },
-            inplace=True,
-        )
-
+        """Recupera i dati OHLCV da Capital.com."""
+        epic = TICKER_TO_EPIC.get(coin.upper(), coin.upper() + "USD")
+        resolution = CAPITAL_INTERVAL_MAP.get(interval, "MINUTE_15")
+        
+        candles = self.capital_client.fetch_candles(epic, resolution, limit)
+        
+        if not candles:
+            raise RuntimeError(f"Nessuna candela ricevuta da Capital.com per {epic}")
+        
+        df = pd.DataFrame(candles)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if df["timestamp"].dt.tz is None:
+            df["timestamp"] = df["timestamp"].dt.tz_localize('UTC')
+        
         for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = df[col].astype(float)
-
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
@@ -252,7 +207,7 @@ class CryptoTechnicalAnalysisHL:
 
     def format_output(self, data: Dict) -> str:
         output = f"\n<{data['ticker']}_data>\n"
-        output += f"Timestamp: {data['timestamp']} (UTC) (Hyperliquid, 15m)\n"
+        output += f"Timestamp: {data['timestamp']} (UTC) (Capital.com, 15m)\n"
         output += f"\n"
 
         curr = data["current"]
@@ -271,16 +226,6 @@ class CryptoTechnicalAnalysisHL:
             f"PP = {pivot['pp']:.2f}, "
             f"S1 = {pivot['s1']:.2f}, S2 = {pivot['s2']:.2f}\n\n"
         )
-
-        deriv = data["derivatives"]
-        output += (
-            f"In addition, here is the latest {data['ticker']} funding data on Hyperliquid:\n"
-        )
-        output += (
-            f"Open Interest (placeholder): Latest: {deriv['open_interest_latest']:.2f} "
-            f"Average: {deriv['open_interest_average']:.2f}\n"
-        )
-        output += f"Funding Rate: {deriv['funding_rate']:.2e}\n\n"
 
         intra = data["intraday"]
         output += "Intraday series (15m, oldest → latest):\n"
@@ -304,15 +249,25 @@ class CryptoTechnicalAnalysisHL:
             f"MACD indicators: {[round(x, 3) for x in lt['macd_series']]}\n"
             f"RSI indicators (14-Period): {[round(x, 3) for x in lt['rsi_14_series']]}\n"
         )
-        output += f"<{data['ticker']}_data>\n"
+        output += f"</{data['ticker']}_data>\n"
         return output
 
 
-def analyze_multiple_tickers(tickers: List[str], testnet: bool = True) -> str:
-    analyzer = CryptoTechnicalAnalysisHL(testnet=testnet)
+def analyze_multiple_tickers(tickers: List[str], capital_client: Any) -> Tuple[str, List]:
+    """
+    Analizza più ticker e restituisce output formattato + dati JSON.
+    
+    Args:
+        tickers: Lista di ticker (es. ['BTC', 'ETH', 'SOL'])
+        capital_client: Istanza CapitalTrader (obbligatorio)
+    """
+    if capital_client is None:
+        raise ValueError("capital_client è obbligatorio per analyze_multiple_tickers")
+    
+    analyzer = CryptoTechnicalAnalysis(capital_client)
     full_output = ""
     datas = []
-    data = None
+    
     for ticker in tickers:
         try:
             data = analyzer.get_complete_analysis(ticker)
@@ -320,6 +275,7 @@ def analyze_multiple_tickers(tickers: List[str], testnet: bool = True) -> str:
             full_output += analyzer.format_output(data)
         except Exception as e:
             print(f"Errore durante l'analisi di {ticker}: {e}")
+    
     return full_output, datas
 
 
