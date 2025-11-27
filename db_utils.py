@@ -992,7 +992,7 @@ def sync_real_positions(positions: List[Dict[str, Any]]) -> int:
             # Rimuovi posizioni che non esistono più (sono state chiuse)
             closed_ids = existing_ids - active_ids
             for closed_id in closed_ids:
-                # Prima logga la chiusura in trades_history
+                # Prima logga la chiusura in trades_history (se non già presente)
                 cur.execute(
                     """
                     INSERT INTO trades_history 
@@ -1003,6 +1003,7 @@ def sync_real_positions(positions: List[Dict[str, Any]]) -> int:
                         pnl_usd, pnl_pct, opened_at, NOW(), 'Position closed'
                     FROM real_positions
                     WHERE deal_id = %s
+                    ON CONFLICT (deal_id) DO NOTHING
                     """,
                     (closed_id,)
                 )

@@ -167,7 +167,19 @@ class HyperLiquidTrader:
 
         if op == "close":
             print(f"[HyperLiquidTrader] Market CLOSE per {symbol}")
-            return self.exchange.market_close(symbol)
+            result = self.exchange.market_close(symbol)
+            print(f"[HyperLiquidTrader] Risultato CLOSE: {result}")
+            
+            # Verifica se la chiusura ha avuto successo
+            if result.get('status') == 'ok':
+                print(f"[HyperLiquidTrader] ✅ Posizione {symbol} chiusa con successo")
+            else:
+                print(f"[HyperLiquidTrader] ⚠️ Chiusura fallita: {result}")
+                # Logga l'errore nel dettaglio
+                if 'response' in result:
+                    print(f"[HyperLiquidTrader] Dettaglio risposta: {result['response']}")
+            
+            return result
 
         # OPEN --------------------------------------------------------
         # Prima di aprire la posizione, imposta la leva desiderata
