@@ -19,6 +19,7 @@ CAPITAL_API_KEY = os.getenv("CAPITAL_API_KEY")
 CAPITAL_PASSWORD = os.getenv("CAPITAL_API_PASSWORD")
 CAPITAL_IDENTIFIER = os.getenv("CAPITAL_IDENTIFIER")
 CAPITAL_DEMO = os.getenv("CAPITAL_DEMO_MODE", "True").lower() == "true"
+CAPITAL_ACCOUNT_ID = os.getenv("CAPITAL_ACCOUNT_ID")  # Account specifico (opzionale)
 
 # Tickers - Capital.com EPICs per crypto
 TICKERS = ['BTC', 'ETH', 'SOL']  # Verranno mappati a BTCUSD, ETHUSD, SOLUSD
@@ -46,7 +47,8 @@ try:
         api_key=CAPITAL_API_KEY,
         password=CAPITAL_PASSWORD,
         identifier=CAPITAL_IDENTIFIER,
-        demo_mode=CAPITAL_DEMO
+        demo_mode=CAPITAL_DEMO,
+        account_id=CAPITAL_ACCOUNT_ID  # Forza account specifico da env
     )
     print("   ✅ Connesso a Capital.com")
 
