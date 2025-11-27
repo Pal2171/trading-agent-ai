@@ -1,47 +1,63 @@
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from prophet import Prophet
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
 import warnings
 warnings.filterwarnings('ignore')
 
-class HyperliquidForecaster:
-    def __init__(self, testnet: bool = True):
-        base_url = constants.TESTNET_API_URL if testnet else constants.MAINNET_API_URL
-        self.info = Info(base_url, skip_ws=True)
-        self.last_prices = {}  # Memorizza gli ultimi prezzi per calcolare la variazione
 
-    def _fetch_candles(self, coin: str, interval: str, limit: int) -> pd.DataFrame:
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        interval_ms = {"15m": 15*60_000, "1h": 60*60_000}[interval]
-        start_ms = now_ms - limit * interval_ms
+class CryptoForecaster:
+    """Forecaster che usa Capital.com per i dati di prezzo"""
+    
+    def __init__(self, capital_client=None):
+        self.capital_client = capital_client
+        self.last_prices = {}
 
-        data = self.info.candles_snapshot(
-            name=coin,
-            interval=interval,
-            startTime=start_ms,
-            endTime=now_ms
-        )
-
-        if not data:
-            raise RuntimeError(f"No candles for {coin} {interval}")
-
-        df = pd.DataFrame(data)
-        df["ds"] = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert(None)
-        df["y"] = df["c"].astype(float)
-
+    def _fetch_candles_capital(self, epic: str, resolution: str, limit: int) -> pd.DataFrame:
+        """Fetch candles da Capital.com"""
+        if not self.capital_client:
+            raise RuntimeError("Capital.com client not provided")
+        
+        candles = self.capital_client.fetch_candles(epic, resolution=resolution, limit=limit)
+        
+        if not candles:
+            raise RuntimeError(f"No candles for {epic} {resolution}")
+        
+        df = pd.DataFrame(candles)
+        df["ds"] = pd.to_datetime(df["timestamp"])
+        df["y"] = df["close"].astype(float)
         df = df[["ds", "y"]].sort_values("ds").reset_index(drop=True)
         return df
 
-    def forecast(self, coin: str, interval: str) -> tuple:
-        if interval == "15m":
-            df = self._fetch_candles(coin, "15m", limit=300)
-            freq = "15min"
-        else:
-            df = self._fetch_candles(coin, "1h", limit=500)
-            freq = "H"
+    def _map_ticker_to_epic(self, ticker: str) -> str:
+        """Mappa ticker a Capital.com EPIC"""
+        mapping = {
+            "BTC": "BTCUSD",
+            "ETH": "ETHUSD", 
+            "SOL": "SOLUSD",
+            "BTCUSD": "BTCUSD",
+            "ETHUSD": "ETHUSD",
+            "SOLUSD": "SOLUSD",
+        }
+        return mapping.get(ticker.upper(), ticker.upper())
 
+    def _map_interval_to_resolution(self, interval: str) -> str:
+        """Mappa intervallo a Capital.com resolution"""
+        mapping = {
+            "15m": "MINUTE_15",
+            "1h": "HOUR",
+        }
+        return mapping.get(interval, "MINUTE_15")
+
+    def forecast(self, ticker: str, interval: str) -> tuple:
+        """Genera forecast per un ticker e intervallo"""
+        epic = self._map_ticker_to_epic(ticker)
+        resolution = self._map_interval_to_resolution(interval)
+        
+        limit = 300 if interval == "15m" else 500
+        freq = "15min" if interval == "15m" else "H"
+        
+        df = self._fetch_candles_capital(epic, resolution, limit)
+        
         # Memorizza l'ultimo prezzo
         last_price = df["y"].iloc[-1]
 
@@ -51,25 +67,22 @@ class HyperliquidForecaster:
         future = model.make_future_dataframe(periods=1, freq=freq)
         forecast = model.predict(future)
 
-        # Restituisce sia il forecast che l'ultimo prezzo
         return forecast.tail(1)[["ds", "yhat", "yhat_lower", "yhat_upper"]], last_price
 
     def forecast_many(self, tickers: list, intervals=("15m", "1h")):
+        """Genera forecasts per multipli ticker e intervalli"""
         results = []
-        for coin in tickers:
+        for ticker in tickers:
             for interval in intervals:
                 try:
-                    forecast_data, last_price = self.forecast(coin, interval)
+                    forecast_data, last_price = self.forecast(ticker, interval)
                     fc = forecast_data.iloc[0]
                     
-                    # Calcola la variazione percentuale
                     variazione_pct = ((fc["yhat"] - last_price) / last_price) * 100
-                    
-                    # Determina il timeframe in italiano
                     timeframe = "Prossimi 15 Minuti" if interval == "15m" else "Prossima Ora"
                     
                     results.append({
-                        "Ticker": coin,
+                        "Ticker": ticker,
                         "Timeframe": timeframe,
                         "Ultimo Prezzo": round(last_price, 2),
                         "Previsione": round(fc["yhat"], 2),
@@ -80,7 +93,7 @@ class HyperliquidForecaster:
                     })
                 except Exception as e:
                     results.append({
-                        "Ticker": coin,
+                        "Ticker": ticker,
                         "Timeframe": "Prossimi 15 Minuti" if interval == "15m" else "Prossima Ora",
                         "Ultimo Prezzo": None,
                         "Previsione": None,
@@ -92,40 +105,23 @@ class HyperliquidForecaster:
                     })
         return results
 
-    def get_predictions_summary(self) -> pd.DataFrame:
-        """Restituisce un DataFrame con il riepilogo delle previsioni (compatibile con il vecchio script)"""
-        if not hasattr(self, '_last_results'):
-            return pd.DataFrame()
-        return pd.DataFrame(self._last_results)
 
-    def get_crypto_forecasts(self, tickers: list):
-        """Metodo principale compatibile con il vecchio script"""
-        self._last_results = self.forecast_many(tickers, intervals=("15m", "1h"))
-        df = pd.DataFrame(self._last_results)
+def get_crypto_forecasts(tickers=['BTC', 'ETH', 'SOL'], testnet=True, capital_client=None):
+    """
+    Funzione principale per generare forecasts.
+    Richiede capital_client per funzionare.
+    """
+    if capital_client is None:
+        return "Forecasts non disponibili (capital_client non fornito)", "[]"
+    
+    try:
+        forecaster = CryptoForecaster(capital_client=capital_client)
+        results = forecaster.forecast_many(tickers)
         
-        # Rimuovi la colonna error se presente
+        df = pd.DataFrame(results)
         if 'error' in df.columns:
             df = df.drop('error', axis=1)
             
-        return df.to_string(index=False)
-
-# Funzione helper per mantenere compatibilità con il vecchio script
-def get_hyperliquid_forecasts(tickers=['BTC', 'ETH', 'SOL'], testnet=True):
-    forecaster = HyperliquidForecaster(testnet=testnet)
-    return forecaster.get_crypto_forecasts(tickers)
-
-def get_crypto_forecasts(tickers=['BTC', 'ETH', 'SOL'], testnet=True):
-    try:
-        forecaster = HyperliquidForecaster(testnet=True)
-        results = forecaster.forecast_many(["BTC", "ETH", "SOL"])
-        
-        # Stampa il riepilogo come DataFrame
-        df = pd.DataFrame(results)
         return df.to_string(index=False), df.to_json(orient='records')
-    except:
-        return None, None
-
-
-# Esempio di utilizzo
-# if __name__ == "__main__":
-#     print(get_crypto_forecasts())
+    except Exception as e:
+        return f"Errore forecasts: {e}", "[]"

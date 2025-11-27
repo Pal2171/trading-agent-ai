@@ -67,7 +67,7 @@ try:
 
     # 5. Forecasts
     print("\n5️⃣ Generazione previsioni Prophet...")
-    forecasts_txt, forecasts_json = get_crypto_forecasts()
+    forecasts_txt, forecasts_json = get_crypto_forecasts(tickers=TICKERS, capital_client=bot)
     print("   ✅ Previsioni generate")
 
     # 6. Costruzione messaggio per AI
