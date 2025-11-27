@@ -49,8 +49,8 @@ class CapitalTrader:
         # Switch to correct account if specified or use preferred
         self._select_account()
 
-    def _authenticate(self):
-        """Authenticate with Capital.com API"""
+    def _authenticate(self, max_retries: int = 5):
+        """Authenticate with Capital.com API with retry on rate limit"""
         url = f"{self.base_url}/api/v1/session"
         headers = {"X-CAP-API-KEY": self.api_key}
         payload = {
@@ -59,18 +59,31 @@ class CapitalTrader:
             "encryptedPassword": False
         }
         
-        try:
-            response = self.session.post(url, headers=headers, json=payload)
-            
-            if response.status_code == 200:
-                self._handle_auth_success(response)
-            else:
-                print(f"⚠️ Auth failed with status {response.status_code}: {response.text}")
-                response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                response = self.session.post(url, headers=headers, json=payload)
                 
-        except Exception as e:
-            print(f"❌ Capital.com Authentication Error: {e}")
-            raise
+                if response.status_code == 200:
+                    self._handle_auth_success(response)
+                    return
+                elif response.status_code == 429:
+                    # Rate limited - wait and retry with exponential backoff
+                    wait_time = (2 ** attempt) * 10  # 10s, 20s, 40s, 80s, 160s
+                    print(f"⚠️ Rate limited (429). Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"⚠️ Auth failed with status {response.status_code}: {response.text}")
+                    response.raise_for_status()
+                    
+            except requests.exceptions.HTTPError:
+                raise
+            except Exception as e:
+                print(f"❌ Capital.com Authentication Error: {e}")
+                raise
+        
+        # If we exhausted all retries
+        raise Exception(f"Authentication failed after {max_retries} retries due to rate limiting")
 
     def _handle_auth_success(self, response):
         self.cst = response.headers.get("CST")
