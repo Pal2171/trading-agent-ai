@@ -69,7 +69,7 @@ If any value is outside these ranges, adjust it to the nearest valid value.
 
 def previsione_trading_agent(prompt):
     """
-    Utilizza Gemini 2.0 Flash (Experimental) per generare decisioni di trading strutturate.
+    Utilizza Gemini 2.5 Pro per generare decisioni di trading strutturate.
     
     Args:
         prompt (str): Il prompt completo con tutte le informazioni di mercato
@@ -81,9 +81,9 @@ def previsione_trading_agent(prompt):
         # Aggiungi le istruzioni di validazione al prompt
         full_prompt = f"{VALIDATION_INSTRUCTIONS}\n\n{prompt}"
         
-        # Inizializza il modello Gemini 2.0 Flash (Experimental)
+        # Inizializza il modello Gemini 2.5 Pro
         model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-exp',
+            model_name='gemini-2.5-pro',
             generation_config={
                 "temperature": 0.7,
                 "top_p": 0.95,
@@ -150,13 +150,14 @@ def get_gemini_model_info():
     """
     return {
         "provider": "Google",
-        "model_name": "gemini-2.0-flash-exp",
-        "model_display_name": "Gemini 2.0 Flash (Experimental)",
+        "model_name": "gemini-2.5-pro",
+        "model_display_name": "Gemini 2.5 Pro",
         "capabilities": [
             "JSON Schema Output",
             "Long Context (1M tokens)",
+            "Advanced Reasoning (Thinking)",
             "Multimodal Support",
-            "Fast Response Time"
+            "Complex Analysis"
         ],
         "temperature": 0.7,
         "max_tokens": 8192,
