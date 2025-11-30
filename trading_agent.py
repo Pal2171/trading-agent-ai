@@ -54,7 +54,7 @@ TRADE_SCHEMA = {
     ]
 }
 
-# Prompt di sistema per forzare la validazione
+# Prompt di sistema per forzare la validazione e ridurre l'overtrading
 VALIDATION_INSTRUCTIONS = """
 CRITICAL VALIDATION RULES - YOU MUST FOLLOW THESE EXACTLY:
 1. target_portion_of_balance: MUST be a number between 0.0 and 1.0 (inclusive)
@@ -65,6 +65,14 @@ CRITICAL VALIDATION RULES - YOU MUST FOLLOW THESE EXACTLY:
 6. direction: MUST be one of: long, short
 
 If any value is outside these ranges, adjust it to the nearest valid value.
+
+TRADING STRATEGY RULES - VERY IMPORTANT:
+- PREFER "hold" over frequent trading. Only close a position if there is a STRONG reason (major trend reversal, significant loss, or clear profit target reached).
+- Do NOT close positions just because of minor indicator fluctuations or small unrealized losses.
+- Let winning trades run - only take profit when RSI is extremely overbought (>80) or price hits major resistance.
+- Cut losses only when the loss exceeds 2-3% of position value OR there is a confirmed trend reversal.
+- If indicators are mixed or unclear, ALWAYS choose "hold".
+- Avoid overtrading: opening and closing the same position multiple times per day destroys profits through spreads and fees.
 """
 
 def previsione_trading_agent(prompt):
@@ -82,12 +90,14 @@ def previsione_trading_agent(prompt):
         full_prompt = f"{VALIDATION_INSTRUCTIONS}\n\n{prompt}"
         
         # Inizializza il modello Gemini 2.5 Pro
+        # Temperature bassa (0.3) per decisioni più stabili e coerenti
+        # come GPT-5.1 di Rizzo che usa reasoning deterministico
         model = genai.GenerativeModel(
             model_name='gemini-2.5-pro',
             generation_config={
-                "temperature": 0.7,
-                "top_p": 0.95,
-                "top_k": 40,
+                "temperature": 0.3,
+                "top_p": 0.90,
+                "top_k": 20,
                 "max_output_tokens": 8192,
                 "response_mime_type": "application/json",
                 "response_schema": TRADE_SCHEMA
@@ -159,9 +169,9 @@ def get_gemini_model_info():
             "Multimodal Support",
             "Complex Analysis"
         ],
-        "temperature": 0.7,
+        "temperature": 0.3,  # Bassa per decisioni stabili
         "max_tokens": 8192,
-        "validation": "Post-processing validation for trading parameters"
+        "validation": "Post-processing validation + Anti-overtrading rules"
     }
 
 

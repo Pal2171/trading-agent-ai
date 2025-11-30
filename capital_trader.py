@@ -585,6 +585,16 @@ class CapitalTrader:
             epic = pos.get('epic', pos.get('symbol', ''))
             symbol = epic.replace("USD", "") if epic.endswith("USD") else epic
             
+            # Calcola PnL percentuale
+            entry_price = pos.get('entry_price') or pos.get('openLevel') or 0
+            mark_price = pos.get('mark_price') or pos.get('currentLevel') or 0
+            pnl_pct = 0
+            if entry_price and mark_price and entry_price != 0:
+                price_diff = mark_price - entry_price
+                if pos.get('direction') == 'SELL':
+                    price_diff = -price_diff
+                pnl_pct = (price_diff / entry_price) * 100
+            
             formatted_positions.append({
                 "deal_id": pos.get('dealId'),  # Capital.com deal ID
                 "symbol": symbol,
@@ -592,15 +602,17 @@ class CapitalTrader:
                 "side": "long" if pos.get('direction') == "BUY" else "short",
                 "direction": pos.get('direction', 'BUY'),
                 "size": pos.get('size', 0),
-                "entry_price": pos.get('entry_price') or pos.get('openLevel'),
-                "mark_price": pos.get('mark_price') or pos.get('currentLevel'),
+                "entry_price": entry_price,
+                "mark_price": mark_price,
                 "openLevel": pos.get('openLevel'),
                 "currentLevel": pos.get('currentLevel'),
                 "pnl_usd": pos.get('pnl') or pos.get('profit') or 0,
+                "pnl_pct": pnl_pct,  # Aggiunto per anti-overtrading
                 "profit": pos.get('profit') or pos.get('pnl') or 0,
                 "stopLevel": pos.get('stopLevel'),
                 "limitLevel": pos.get('limitLevel'),
-                "leverage": "N/A (CFD)"
+                "leverage": "N/A (CFD)",
+                "opened_at": pos.get('created_at'),  # Aggiunto per anti-overtrading
             })
         
         return {
